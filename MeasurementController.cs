@@ -12,7 +12,6 @@ public class MeasurementController : MonoBehaviour
 
     private void Start()
     {
-        // Initialize the object size to zero
         objectWidth = 0;
         objectHeight = 0;
         objectSize = 0;
@@ -20,19 +19,17 @@ public class MeasurementController : MonoBehaviour
 
     public void StartMeasurement()
     {
-        // Start the measurement coroutine
         StartCoroutine(MeasurementCoroutine());
     }
 
     public void StopMeasurement()
     {
-        // Stop the measurement coroutine
         StopAllCoroutines();
     }
 
     private IEnumerator MeasurementCoroutine()
     {
-        // Continuously update the object size text
+
         while (true)
         {
             objectSize = objectWidth * objectHeight;
@@ -43,7 +40,6 @@ public class MeasurementController : MonoBehaviour
 
     public void SetObjectSize(float width, float height)
     {
-        // Set the object width and height
         objectWidth = width;
         objectHeight = height;
     }
