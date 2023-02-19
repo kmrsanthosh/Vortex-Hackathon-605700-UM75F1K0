@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>AR Object Detection with OpenCV, TensorFlow, and AutoCAD</title>
+    <script src="https://aframe.io/releases/1.0.4/aframe.min.js"></script>
+    <script src="https://cdn.rawgit.com/jeromeetienne/AR.js/2.2.0/aframe/build/aframe-ar.js"></script>
+    <script async src="https://docs.opencv.org/master/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <script src="https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/viewer3D.min.js"></script>
+  </head>
+  <body>
+    <a-scene embedded arjs>
+      <a-marker preset="hiro">
+        <a-box position="0 0.5 0" material="color: red;"></a-box>
+      </a-marker>
+      <a-entity camera></a-entity>
+    </a-scene>
+    <div id="viewer"></div>
+    <script>
+      function onOpenCvReady() {
+        var video = document.querySelector('video');
+        var canvas = document.createElement('canvas');
+        var context = canvas.getContext('2d');
+        var marker = document.querySelector('a-marker');
+        var markerWidth = marker.getAttribute('width');
+        var markerHeight = marker.getAttribute('height');
+        
+        var detector = new cv.SimpleBlobDetector();
+        var model;
+
+        cocoSsd.load()
+          .then(function(cocoModel) {
+            model = cocoModel;
+
+            var viewer;
+
+            function initializeViewer() {
+              var options = {
+                env: 'AutodeskProduction',
+                api: 'derivativeV2',
+                accessToken: 'YOUR_ACCESS_TOKEN',
+                getAccessToken: function(onTokenReady) {
+                  onTokenReady('YOUR_ACCESS_TOKEN', 60);
+                }
+              };
+
+              Autodesk.Viewing.Initializer(options, function() {
+                viewer = new Autodesk.Viewing.GuiViewer3D(document.getElementById('viewer'));
+                viewer.start();
+              });
+            }
+
+            initializeViewer();
+
+            navigator.mediaDevices.getUserMedia({ video: true })
+              .then(function(stream) {
+                video.srcObject = stream;
+                video.play();
+
+                setInterval(function() {
+                  canvas.width = video.videoWidth;
+                  canvas.height = video.videoHeight;
+                  context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                  var src = cv.imread(canvas);
+                  var gray = new cv.Mat();
+                  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+                  var keypoints = new cv.KeyPointVector();
+                  detector.detect(gray, keypoints);
+
+                  var maxArea = 0;
+                  var maxKeypoint = null;
+
+                  for (var i = 0; i < keypoints.size(); i++) {
+                    var kp = keypoints.get(i);
+                    if (kp.size > maxArea) {
+                      maxArea = kp.size;
+                      maxKeypoint = kp;
+                    }
+                  }
+
+                  if (maxKeypoint) {
+                    var x = maxKeypoint.pt.x * canvas.width / gray.cols;
+                    var y = maxKeypoint.pt.y * canvas.height / gray.rows;
+                    var size = maxKeypoint.size * canvas.width / gray.cols;
+                    var distance = (markerWidth * 100) / (2 * Math.tan(Math.PI / 8) * size);
+                    console.log('Distance to object:', distance.toFixed(2), 'cm');
+    
+                    model.detect(video).then(function(predictions) {
+                      var person = predictions.find(function(prediction) {
+                        return prediction.class === 'person';
+                      });
+    
+                      if (person) {
+                        console.log('Object is a person');
+                      }
+    
+                      var viewports = Autodesk.Viewing.Document.getInitialViewablePath('urn:YOUR_3D_MODEL_URN');
+                      var options = {
+                        sharedPropertyDbPath: 'https://developer.api.autodesk.com/derivativeservice/v2/derivatives/:urn/metadata/:guid/propertiesdb'
+                      };
+                      viewer.loadModel(viewports, options);
+                      viewer.addEventListener(Autodesk.Viewing.GEOMETRY_LOADED_EVENT, function() {
+                        var svf = viewer.model.getData().metadata;
+    
+                        var width = 200;
+                        var height = 200;
+    
+                        var svg = '<svg width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '" xmlns="http://www.w3.org/2000/svg">';
+                        svg += '<rect x="0" y="0" width="' + width + '" height="' + height + '" fill="#fff"/>';
+    
+                        var orthographicCameras = [
+                          { position: { x: 0, y: 0, z: distance }, target: { x: 0, y: 0, z: 0 } },
+                          { position: { x: 0, y: distance, z: 0 }, target: { x: 0, y: 0, z: 0 } },
+                          { position: { x: distance, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 } }
+                        ];
+    
+                        for (var i = 0; i < orthographicCameras.length; i++) {
+                          var camera = orthographicCameras[i];
+                          viewer.navigation.setRequestTransitionWithUp(true, new THREE.Vector3(camera.target.x, camera.target.y, camera.target.z), viewer.navigation.getEyeVector(), 0, function() {
+                            viewer.autocam.setHomeViewFrom(viewer.navigation.getCamera());
+                            viewer.autocam.shot();
+                            var imageData = viewer.getScreenShot(width, height);
+                            var canvas = document.createElement('canvas');
+                            canvas.width = imageData.width;
+                            canvas.height = imageData.height;
+                            var context = canvas.getContext('2d');
+                            context.drawImage(imageData, 0, 0);
+                            var dataUrl = canvas.toDataURL('image/png');
+                            svg += '<image x="' + (i * width) + '" y="0" width="' + width + '" height="' + height + '" xlink:href="' + dataUrl + '"/>';
+                          });
+                        }
+    
+                        svg += '</svg>';
+    
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('POST', 'https://developer.api.autodesk.com/modelderivative/v2/designdata/job');
+                        xhr.setRequestHeader('Authorization', 'Bearer YOUR_ACCESS_TOKEN');
+                        xhr.setRequestHeader('Content-Type', 'application/json');
+                        xhr.onreadystatechange = function() {
+                          if (xhr.readyState === 4 && xhr.status === 200) {
+                            var response = JSON.parse(xhr.responseText);
+                            console.log('Job submitted:', response);
+                          }
+                        };
+                        xhr.send(JSON.stringify({
+                          input: {
+                            urn: 'YOUR_3D_MODEL_URN'
+                          },
+                          output: {
+                            formats: [
+                              {
+                                type: 'dwg',
+                                views: ['2d'],
+                                advanced: {
+                                  orthographic: true,
+                                  modelGuid: svf.guid,
+                                  camera: orthographicCameras
+                                }
+                              }
+                            ]
+                          }
+                        }));
+                      });
+                    });
+                  }});
+                });
+              });
+        
+            </script>
+          </body>
+        </html>
+        
+        
